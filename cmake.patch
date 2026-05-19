@@ -1,0 +1,52 @@
+Submodule third_party/Tensorpipe contains modified content
+Submodule third_party/googletest contains modified content
+diff --git a/third_party/Tensorpipe/third_party/googletest/CMakeLists.txt b/third_party/Tensorpipe/third_party/googletest/CMakeLists.txt
+index 12fd7450..01ee86eb 100644
+--- a/third_party/Tensorpipe/third_party/googletest/CMakeLists.txt
++++ b/third_party/Tensorpipe/third_party/googletest/CMakeLists.txt
+@@ -1,7 +1,7 @@
+ # Note: CMake support is community-based. The maintainers do not use CMake
+ # internally.
+ 
+-cmake_minimum_required(VERSION 2.8.12)
++cmake_minimum_required(VERSION 2.8.12...4.2)
+ 
+ if (POLICY CMP0048)
+   cmake_policy(SET CMP0048 NEW)
+diff --git a/third_party/Tensorpipe/third_party/googletest/googlemock/CMakeLists.txt b/third_party/Tensorpipe/third_party/googletest/googlemock/CMakeLists.txt
+index e7df8ec5..4f58515d 100644
+--- a/third_party/Tensorpipe/third_party/googletest/googlemock/CMakeLists.txt
++++ b/third_party/Tensorpipe/third_party/googletest/googlemock/CMakeLists.txt
+@@ -42,7 +42,7 @@ else()
+   cmake_policy(SET CMP0048 NEW)
+   project(gmock VERSION ${GOOGLETEST_VERSION} LANGUAGES CXX C)
+ endif()
+-cmake_minimum_required(VERSION 2.8.12)
++cmake_minimum_required(VERSION 2.8.12...4.2)
+ 
+ if (COMMAND set_up_hermetic_build)
+   set_up_hermetic_build()
+diff --git a/third_party/Tensorpipe/third_party/googletest/googletest/CMakeLists.txt b/third_party/Tensorpipe/third_party/googletest/googletest/CMakeLists.txt
+index 1379afb9..db7f1ba8 100644
+--- a/third_party/Tensorpipe/third_party/googletest/googletest/CMakeLists.txt
++++ b/third_party/Tensorpipe/third_party/googletest/googletest/CMakeLists.txt
+@@ -53,7 +53,7 @@ else()
+   cmake_policy(SET CMP0048 NEW)
+   project(gtest VERSION ${GOOGLETEST_VERSION} LANGUAGES CXX C)
+ endif()
+-cmake_minimum_required(VERSION 2.8.12)
++cmake_minimum_required(VERSION 2.8.12...4.2)
+ 
+ if (POLICY CMP0063) # Visibility
+   cmake_policy(SET CMP0063 NEW)
+Submodule third_party/libuv contains modified content
+diff --git a/third_party/Tensorpipe/third_party/libuv/CMakeLists.txt b/third_party/Tensorpipe/third_party/libuv/CMakeLists.txt
+index 93733dd04..32a14eae8 100644
+--- a/third_party/Tensorpipe/third_party/libuv/CMakeLists.txt
++++ b/third_party/Tensorpipe/third_party/libuv/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-cmake_minimum_required(VERSION 3.4)
++cmake_minimum_required(VERSION 3.4...4.2)
+ 
+ if(POLICY CMP0091)
+   cmake_policy(SET CMP0091 NEW) # Enable MSVC_RUNTIME_LIBRARY setting

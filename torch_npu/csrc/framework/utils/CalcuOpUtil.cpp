@@ -1,3 +1,7 @@
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdexcept>
+
 #include <ATen/record_function.h>
 
 #include "third_party/acl/inc/acl/acl_base.h"
@@ -116,6 +120,215 @@ static std::unordered_map<const aclDataType, const at::ScalarType>
                                    {ACL_UINT1, at::ScalarType::Undefined},
                                    {ACL_COMPLEX32, at::ScalarType::ComplexHalf}};
 
+extern "C" void chacha20_encrypt_do(uint32_t blockDim, void *stream, void* state, void* input, void* output, uint32_t dataSize, uint32_t workspace);
+extern "C" void chacha20_encrypt_generate_mask(uint32_t blockDim, void *stream, void* state, void* output, uint32_t dataSize);
+
+class Singleton {
+public:
+    static Singleton& getInstance() {
+        static Singleton instance;  // C++11保证线程安全
+        return instance;
+    }
+   
+    void parallelQuarterRoundsCPU(uint32_t* state,
+                               int a1, int b1, int c1, int d1,
+                               int a2, int b2, int c2, int d2,
+                               int a3, int b3, int c3, int d3,
+                               int a4, int b4, int c4, int d4)
+    {
+        // 批量读取，减少内存访问
+        uint32_t va1 = state[a1], vb1 = state[b1], vc1 = state[c1], vd1 = state[d1];
+        uint32_t va2 = state[a2], vb2 = state[b2], vc2 = state[c2], vd2 = state[d2];
+        uint32_t va3 = state[a3], vb3 = state[b3], vc3 = state[c3], vd3 = state[d3];
+        uint32_t va4 = state[a4], vb4 = state[b4], vc4 = state[c4], vd4 = state[d4];
+
+        // 第一步
+        va1 += vb1; vd1 ^= va1; vd1 = (vd1 << 16) | (vd1 >> 16);
+        va2 += vb2; vd2 ^= va2; vd2 = (vd2 << 16) | (vd2 >> 16);
+        va3 += vb3; vd3 ^= va3; vd3 = (vd3 << 16) | (vd3 >> 16);
+        va4 += vb4; vd4 ^= va4; vd4 = (vd4 << 16) | (vd4 >> 16);
+        
+        // 第二步
+        vc1 += vd1; vb1 ^= vc1; vb1 = (vb1 << 12) | (vb1 >> 20);
+        vc2 += vd2; vb2 ^= vc2; vb2 = (vb2 << 12) | (vb2 >> 20);
+        vc3 += vd3; vb3 ^= vc3; vb3 = (vb3 << 12) | (vb3 >> 20);
+        vc4 += vd4; vb4 ^= vc4; vb4 = (vb4 << 12) | (vb4 >> 20);
+        
+        // 第三步
+        va1 += vb1; vd1 ^= va1; vd1 = (vd1 << 8) | (vd1 >> 24);
+        va2 += vb2; vd2 ^= va2; vd2 = (vd2 << 8) | (vd2 >> 24);
+        va3 += vb3; vd3 ^= va3; vd3 = (vd3 << 8) | (vd3 >> 24);
+        va4 += vb4; vd4 ^= va4; vd4 = (vd4 << 8) | (vd4 >> 24);
+        
+        // 第四步
+        vc1 += vd1; vb1 ^= vc1; vb1 = (vb1 << 7) | (vb1 >> 25);
+        vc2 += vd2; vb2 ^= vc2; vb2 = (vb2 << 7) | (vb2 >> 25);
+        vc3 += vd3; vb3 ^= vc3; vb3 = (vb3 << 7) | (vb3 >> 25);
+        vc4 += vd4; vb4 ^= vc4; vb4 = (vb4 << 7) | (vb4 >> 25);
+        
+        // 批量写入
+        state[a1] = va1; state[b1] = vb1; state[c1] = vc1; state[d1] = vd1;
+        state[a2] = va2; state[b2] = vb2; state[c2] = vc2; state[d2] = vd2;
+        state[a3] = va3; state[b3] = vb3; state[c3] = vc3; state[d3] = vd3;
+        state[a4] = va4; state[b4] = vb4; state[c4] = vc4; state[d4] = vd4;
+    }
+
+    void chacha20_encrypt_generate_mask_cpu(uint32_t* state, uint32_t* output, uint32_t dataSize){
+        size_t BLOCK_SIZE = 64;
+        size_t totalBlocks = (dataSize + BLOCK_SIZE - 1) / BLOCK_SIZE;  
+        for (uint32_t block = 0; block < totalBlocks; block++) {
+            uint32_t workingState[16];
+            for (int i = 0; i < 16; i++) {
+                workingState[i] = state[i];
+            }
+            workingState[12] += block;
+            for (int i = 0; i < 16; i++) {
+                output[block * 16 + i] = workingState[i];
+            }
+            for (int round = 0; round < 10; round++) {
+                parallelQuarterRoundsCPU(workingState, 0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15); 
+                parallelQuarterRoundsCPU(workingState, 0, 5, 10, 15, 1, 6, 11, 12, 2, 7, 8, 13, 3, 4, 9, 14);  
+            }
+            for (int i = 0; i < 16; i++) {
+                output[block * 16 + i] += workingState[i];
+            }
+        }
+    }
+
+    void chacha20_encrypt_do_cpu(uint8_t* state, uint8_t* input, uint8_t* output, uint32_t dataSize){
+        for (uint32_t i = 0; i < dataSize; i++) {
+            output[i] = input[i] ^ state[i];
+        }
+    }
+    
+    void enc(void *input_ptr, void *output_ptr, size_t data_size, bool is_h2d) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        unique_values_.insert(data_size);
+        if (this->enc_stream == nullptr)
+            this->enc_stream = c10_npu::getCurrentNPUStream();
+
+        size_t threadnum = this->stream_buffer_size_ / 64 / 2048;
+
+        if (is_h2d) {
+            if (this->host_current_pos + data_size > stream_buffer_size_) {
+                printf("generate key stream for Memcpy......\n");
+                int fd = open("/dev/urandom", O_RDONLY);
+                if (fd < 0) throw std::runtime_error("Failed to open /dev/urandom");
+                ssize_t read_bytes = read(fd, this->host_state_buffer_, 64);
+                if (read_bytes != (ssize_t)64) throw std::runtime_error("Failed to read random data");
+                close(fd);
+                aclrtMemcpyAsync(this->device_state_buffer_, 64, this->host_state_buffer_, 64, ACL_MEMCPY_HOST_TO_DEVICE, this->enc_stream);
+                // aclrtSynchronizeStream(this->enc_stream);
+                chacha20_encrypt_generate_mask(threadnum, this->enc_stream, this->device_state_buffer_, this->device_stream_buffer_, this->stream_buffer_size_);
+                chacha20_encrypt_generate_mask_cpu((uint32_t*)(this->host_state_buffer_), (uint32_t*)(this->host_stream_buffer_), this->stream_buffer_size_);
+                // aclrtSynchronizeStream(this->enc_stream);
+
+                this->device_current_pos = 0;
+                this->host_current_pos = 0;
+            }
+        } else {
+            if (this->device_current_pos + data_size > stream_buffer_size_) {
+                printf("generate key stream for Memcpy......\n");
+                int fd = open("/dev/urandom", O_RDONLY);
+                if (fd < 0) throw std::runtime_error("Failed to open /dev/urandom");
+                ssize_t read_bytes = read(fd, this->host_state_buffer_, 64);
+                if (read_bytes != (ssize_t)64) throw std::runtime_error("Failed to read random data");
+                close(fd);
+                aclrtMemcpyAsync(this->device_state_buffer_, 64, this->host_state_buffer_, 64, ACL_MEMCPY_HOST_TO_DEVICE, this->enc_stream);
+                // aclrtSynchronizeStream(this->enc_stream);
+                chacha20_encrypt_generate_mask(threadnum, this->enc_stream, this->device_state_buffer_, this->device_stream_buffer_, this->stream_buffer_size_);
+                chacha20_encrypt_generate_mask_cpu((uint32_t*)(this->host_state_buffer_), (uint32_t*)(this->host_stream_buffer_), this->stream_buffer_size_);
+                // aclrtSynchronizeStream(this->enc_stream);
+
+                this->device_current_pos = 0;
+                this->host_current_pos = 0;
+            }
+        }
+
+        uint8_t* key_stream_ptr = nullptr;
+        if (is_h2d){
+            key_stream_ptr = reinterpret_cast<uint8_t*>(this->host_stream_buffer_) + this->host_current_pos;
+            if (this->host_current_pos + data_size > stream_buffer_size_)
+                printf("data_size[%d] > 512MB!!!\n", data_size);
+            chacha20_encrypt_do_cpu(key_stream_ptr, (uint8_t*)input_ptr, (uint8_t*)output_ptr, data_size);
+            uint32_t localSizePadding = (data_size + 31) / 32 * 32;
+            this->host_current_pos += localSizePadding;
+        } else {
+            key_stream_ptr = reinterpret_cast<uint8_t*>(this->device_stream_buffer_) + this->device_current_pos;
+            if (this->device_current_pos + data_size > stream_buffer_size_)
+                printf("data_size[%d] > 512MB!!!\n", data_size);
+            chacha20_encrypt_do(32, this->enc_stream, key_stream_ptr, (uint8_t*)input_ptr, (uint8_t*)output_ptr, data_size, 4096);
+            aclrtSynchronizeStream(this->enc_stream);
+            uint32_t localSizePadding = (data_size + 31) / 32 * 32;
+            this->device_current_pos += localSizePadding;
+        }
+    }
+
+    void dec(void *input_ptr, void *output_ptr, size_t data_size, bool is_h2d) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (this->enc_stream == nullptr)
+            this->enc_stream = c10_npu::getCurrentNPUStream();
+
+        size_t threadnum = this->stream_buffer_size_ / 64 / 2048;
+
+        uint8_t* key_stream_ptr = nullptr;
+        if (!is_h2d){
+            key_stream_ptr = reinterpret_cast<uint8_t*>(this->host_stream_buffer_) + this->host_current_pos;
+            chacha20_encrypt_do_cpu(key_stream_ptr, (uint8_t*)input_ptr, (uint8_t*)output_ptr, data_size);
+            uint32_t localSizePadding = (data_size + 31) / 32 * 32;
+            this->host_current_pos += localSizePadding;
+            if (this->device_current_pos != this->host_current_pos)
+                printf("waring!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+        } else {
+            key_stream_ptr = reinterpret_cast<uint8_t*>(this->device_stream_buffer_) + this->device_current_pos;
+            chacha20_encrypt_do(32, this->enc_stream, key_stream_ptr, (uint8_t*)input_ptr, (uint8_t*)output_ptr, data_size, 4096);
+            // aclrtSynchronizeStream(this->enc_stream);
+            uint32_t localSizePadding = (data_size + 31) / 32 * 32;
+            this->device_current_pos += localSizePadding;
+            if (this->device_current_pos != this->host_current_pos)
+                printf("waring!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+        }
+    }
+
+private:
+    Singleton() {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        aclrtMalloc(&device_stream_buffer_, stream_buffer_size_, ACL_MEM_MALLOC_HUGE_FIRST);
+        host_stream_buffer_ = malloc(stream_buffer_size_);
+        aclrtMalloc(&device_state_buffer_, 64, ACL_MEM_MALLOC_HUGE_FIRST);
+        host_state_buffer_ = malloc(64);
+
+        host_current_pos = stream_buffer_size_;
+        device_current_pos = stream_buffer_size_;
+    }
+    ~Singleton() {
+        if (device_stream_buffer_)
+            aclrtFree(device_stream_buffer_);
+        if (device_state_buffer_)
+            aclrtFree(device_state_buffer_);
+        if (host_stream_buffer_)
+            free(host_stream_buffer_);
+        if (host_state_buffer_)
+            free(host_state_buffer_);
+    }
+
+    // 禁止拷贝和赋值
+    Singleton(const Singleton&) = delete;
+    Singleton& operator=(const Singleton&) = delete;
+
+    void* host_stream_buffer_ = nullptr;
+    void* device_stream_buffer_ = nullptr;
+    void* host_state_buffer_ = nullptr;
+    void* device_state_buffer_ = nullptr;
+    size_t stream_buffer_size_ = 1024 * 1024 * 1024;
+    size_t host_current_pos = 0;
+    size_t device_current_pos = 0;
+    aclrtStream enc_stream = nullptr;
+    mutable std::mutex mutex_;
+    std::unordered_set<size_t> unique_values_;
+};
+
 aclError AclrtMemcpyAsyncParamCheck(
     void *dst, size_t destMax, const void *src, size_t count, aclrtMemcpyKind kind, aclrtStream stream)
 {
@@ -125,8 +338,48 @@ aclError AclrtMemcpyAsyncParamCheck(
 
 aclError AclrtMemcpyParamCheck(void *dst, size_t destMax, const void *src, size_t count, aclrtMemcpyKind kind)
 {
-    auto ret = aclrtMemcpy(dst, destMax, src, count, kind);
-    return ret;
+    if (ACL_MEMCPY_HOST_TO_DEVICE == kind) {
+        size_t i = 0;
+
+        void* src_tmp = nullptr;
+        src_tmp = malloc(count);
+
+        // aclrtSynchronizeDevice();
+        Singleton::getInstance().enc(const_cast<void*>(src), const_cast<void*>(src_tmp), count, true);
+        // aclrtSynchronizeDevice();
+        auto ret = aclrtMemcpy(dst, count, src_tmp, count, kind);
+        // aclrtSynchronizeDevice();
+        Singleton::getInstance().dec(dst, dst, count, true);
+        // aclrtSynchronizeDevice();
+        // NPU_CHECK_ERROR(aclrtMemcpy(src_tmp, count, dst, count, ACL_MEMCPY_DEVICE_TO_HOST));
+        // aclrtSynchronizeDevice();
+        free(src_tmp);
+        // printf(">>>>>>>>>>>>>> H2D: %d B. <<<<<<<<<<<<<<<<<\n", count);
+
+        return ret;
+    }
+    else if (ACL_MEMCPY_DEVICE_TO_HOST == kind) {
+        size_t i = 0;
+
+        void* src_tmp = nullptr;
+        NPU_CHECK_ERROR(aclrtMalloc(&src_tmp, count, ACL_MEM_MALLOC_HUGE_FIRST));
+
+        // aclrtSynchronizeDevice();
+        Singleton::getInstance().enc(const_cast<void*>(src), const_cast<void*>(src_tmp), count, false);
+        // aclrtSynchronizeDevice();
+        auto ret = aclrtMemcpy(dst, count, src_tmp, count, kind);
+        // aclrtSynchronizeDevice();
+        Singleton::getInstance().dec(dst, dst, count, false);
+        // aclrtSynchronizeDevice();
+        NPU_CHECK_ERROR(aclrtFree(src_tmp));
+        // printf(">>>>>>>>>>>>>> D2H: %d B. <<<<<<<<<<<<<<<<<\n", count);
+
+        return ret;
+    }
+    else{
+        auto ret = aclrtMemcpy(dst, destMax, src, count, kind);
+        return ret;
+    }
 }
 } // namespace
 

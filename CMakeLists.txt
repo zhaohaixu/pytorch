@@ -300,6 +300,44 @@ if (DEFINED BUILD_TORCHAIR)
   add_dependencies(${PLUGIN_NAME} copy_torchair_pyfiles)
 endif()
 
+set(SOC_VERSION "Ascend910B2" CACHE STRING "system on chip type")
+set(ASCEND_CANN_PACKAGE_PATH "/usr/local/Ascend/ascend-toolkit/latest" CACHE PATH "ASCEND CANN package installation directory" FORCE)
+
+if(EXISTS ${ASCEND_CANN_PACKAGE_PATH}/tools/tikcpp/ascendc_kernel_cmake)
+    set(ASCENDC_CMAKE_DIR ${ASCEND_CANN_PACKAGE_PATH}/tools/tikcpp/ascendc_kernel_cmake)
+    message(STATUS "Found ascendc_kernel_cmake at: ${ASCENDC_CMAKE_DIR}")
+elseif(EXISTS ${ASCEND_CANN_PACKAGE_PATH}/compiler/tikcpp/ascendc_kernel_cmake)
+    set(ASCENDC_CMAKE_DIR ${ASCEND_CANN_PACKAGE_PATH}/compiler/tikcpp/ascendc_kernel_cmake)
+    message(STATUS "Found ascendc_kernel_cmake at: ${ASCENDC_CMAKE_DIR}")
+elseif(EXISTS ${ASCEND_CANN_PACKAGE_PATH}/toolkit/tikcpp/ascendc_kernel_cmake)
+    set(ASCENDC_CMAKE_DIR ${ASCEND_CANN_PACKAGE_PATH}/toolkit/tikcpp/ascendc_kernel_cmake)
+    message(STATUS "Found ascendc_kernel_cmake at: ${ASCENDC_CMAKE_DIR}")
+elseif(EXISTS ${ASCEND_CANN_PACKAGE_PATH}/ascendc_devkit/tikcpp/samples/cmake)
+    set(ASCENDC_CMAKE_DIR ${ASCEND_CANN_PACKAGE_PATH}/ascendc_devkit/tikcpp/samples/cmake)
+    message(STATUS "Found ascendc_kernel_cmake at: ${ASCENDC_CMAKE_DIR}")
+elseif(EXISTS ${ASCEND_CANN_PACKAGE_PATH}/tools/cmake)
+    set(ASCENDC_CMAKE_DIR ${ASCEND_CANN_PACKAGE_PATH}/tools/cmake)
+    message(STATUS "Found cmake tools at: ${ASCENDC_CMAKE_DIR}")
+else()
+    message(STATUS "ASCEND_CANN_PACKAGE_PATH: ${ASCEND_CANN_PACKAGE_PATH}")
+    message(STATUS "Checking paths:")
+    message(STATUS "  ${ASCEND_CANN_PACKAGE_PATH}/tools/tikcpp/ascendc_kernel_cmake")
+    message(STATUS "  ${ASCEND_CANN_PACKAGE_PATH}/compiler/tikcpp/ascendc_kernel_cmake") 
+    message(STATUS "  ${ASCEND_CANN_PACKAGE_PATH}/toolkit/tikcpp/ascendc_kernel_cmake")
+    message(STATUS "  ${ASCEND_CANN_PACKAGE_PATH}/ascendc_devkit/tikcpp/samples/cmake")
+    message(STATUS "  ${ASCEND_CANN_PACKAGE_PATH}/tools/cmake")
+    message(FATAL_ERROR "ascendc_kernel_cmake does not exist, please check whether the cann package is installed.")
+endif()
+
+include(${ASCENDC_CMAKE_DIR}/ascendc.cmake)
+
+# ascendc_library use to add kernel file to generate ascendc library
+ascendc_library(enc_kernels STATIC
+    ${PROJECT_SOURCE_DIR}/enc_src/chacha20.cpp
+)
+
+target_link_libraries(${PLUGIN_NAME} PRIVATE enc_kernels)
+
 link_directories(${PYTORCH_INSTALL_DIR}/lib)
 link_directories(${TORCHNPU_THIRD_PARTY_ROOT}/acl/libs)
 
