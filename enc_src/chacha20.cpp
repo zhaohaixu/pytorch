@@ -1,17 +1,12 @@
-/**  
- * @file hello_world_optimized.cpp  
- * 进一步优化的ChaCha20内核 - 预期额外20-30%性能提升
- */  
 #include "kernel_operator.h"  
 using namespace AscendC;  
 
 constexpr int BLOCK_SIZE = 64; 
 constexpr int MAX_BLOCKS_PER_CALL = 2048; // 从1024增加到2048 (128KB)
-// constexpr int DOUBLE_BUFFER_SIZE = 1024;
 
-class KernelChaCha20Generation {  
+class KernelChaCha20NaiveGeneration {  
 public:  
-    __aicore__ inline KernelChaCha20Generation() {}  
+    __aicore__ inline KernelChaCha20NaiveGeneration() {}  
 
     // 优化的并行四轮运算 - 减少内存访问
     __aicore__ inline void parallelQuarterRounds(uint32_t* state,
@@ -199,9 +194,9 @@ private:
     AscendC::GlobalTensor<uint8_t> outputGlobal;
 };
 
-class KernelChaCha20Optimized {  
+class KernelXorOptimized {  
 public:  
-    __aicore__ inline KernelChaCha20Optimized() {}  
+    __aicore__ inline KernelXorOptimized() {}  
 
     __aicore__ inline void Init(__gm__ uint16_t* state, __gm__ uint16_t* input, __gm__ uint16_t* output, uint32_t dataSize, uint32_t workspace)  
     {  
@@ -529,43 +524,33 @@ private:
     int DOUBLE_BUFFER_SIZE = 1024;
 };
 
-extern "C" __global__ __aicore__ void chacha20_encrypt_optimized(
+extern "C" __global__ __aicore__ void xor_optimized(
     __gm__ uint16_t* state, 
     __gm__ uint16_t* input, 
     __gm__ uint16_t* output, 
     uint32_t dataSize,
     uint32_t workspace)
 {
-    KernelChaCha20Optimized op;
+    KernelXorOptimized op;
     op.Init(state, input, output, dataSize, workspace);
     // KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_VECTOR_CORE);
     op.Process();
 }
 
-extern "C" __global__ __aicore__ void chacha20_encrypt_optimized_null(
-    __gm__ uint16_t* state, 
-    __gm__ uint16_t* input, 
-    __gm__ uint16_t* output, 
-    uint32_t dataSize,
-    uint32_t workspace)
-{
-    return;
-}
-
-extern "C" __global__ __aicore__ void chacha20_encrypt_generation(
+extern "C" __global__ __aicore__ void chacha20_naive_generation(
     __gm__ uint8_t* state, 
     __gm__ uint8_t* output, 
     uint32_t dataSize)
 {
-    KernelChaCha20Generation op;
+    KernelChaCha20NaiveGeneration op;
     op.Init(state, output, dataSize);
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_VECTOR_CORE);
     op.Process();
 }
 
-extern "C" void chacha20_encrypt_do(uint32_t blockDim, void *stream, void* state, void* input, void* output, uint32_t dataSize, uint32_t workspace)
+extern "C" void xor_do(uint32_t blockDim, void *stream, void* state, void* input, void* output, uint32_t dataSize, uint32_t workspace)
 {    
-    chacha20_encrypt_optimized<<<blockDim, nullptr, stream>>>(
+    xor_optimized<<<blockDim, nullptr, stream>>>(
         (__gm__ uint16_t*)state, 
         (__gm__ uint16_t*)input, 
         (__gm__ uint16_t*)output, 
@@ -573,20 +558,10 @@ extern "C" void chacha20_encrypt_do(uint32_t blockDim, void *stream, void* state
         workspace);
 }
 
-extern "C" void chacha20_encrypt_generate_mask(uint32_t blockDim, void *stream, void* state, void* output, uint32_t dataSize)
+extern "C" void chacha20_naive_generate_mask(uint32_t blockDim, void *stream, void* state, void* output, uint32_t dataSize)
 {
-    chacha20_encrypt_generation<<<blockDim, nullptr, stream>>>(
+    chacha20_naive_generation<<<blockDim, nullptr, stream>>>(
         (__gm__ uint8_t*)state, 
         (__gm__ uint8_t*)output, 
         dataSize);
-}
-
-extern "C" void chacha20_encrypt_do_null(uint32_t blockDim, void *stream, void* state, void* input, void* output, uint32_t dataSize, uint32_t workspace)
-{    
-    chacha20_encrypt_optimized_null<<<blockDim, nullptr, stream>>>(
-        (__gm__ uint16_t*)state, 
-        (__gm__ uint16_t*)input, 
-        (__gm__ uint16_t*)output, 
-        dataSize,
-        workspace);
 }

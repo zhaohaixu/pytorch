@@ -334,9 +334,17 @@ include(${ASCENDC_CMAKE_DIR}/ascendc.cmake)
 # ascendc_library use to add kernel file to generate ascendc library
 ascendc_library(enc_kernels STATIC
     ${PROJECT_SOURCE_DIR}/enc_src/chacha20.cpp
+    ${PROJECT_SOURCE_DIR}/enc_src/aes_vec.cpp
+    ${PROJECT_SOURCE_DIR}/enc_src/aes_cube.cpp
 )
 
-target_link_libraries(${PLUGIN_NAME} PRIVATE enc_kernels)
+target_link_libraries(${PLUGIN_NAME} PRIVATE 
+    enc_kernels
+    tiling_api
+    register
+    platform
+    ascendalog
+    dl)
 
 link_directories(${PYTORCH_INSTALL_DIR}/lib)
 link_directories(${TORCHNPU_THIRD_PARTY_ROOT}/acl/libs)
